@@ -1,0 +1,275 @@
+#pragma kernel NoiseGen 0
+
+struct NoiseConfig
+{
+    uint Seed;
+    uint NoiseType;
+    int2 Offset;
+    float ScaleMultiplier;
+    float Weight;
+    bool Warp;
+};
+
+// Output texture 2D
+RWTexture2D<float4> NoiseTexture;
+RWStructuredBuffer<NoiseConfig> NoiseConfigArray;
+
+// Constants
+const float3 vector_right = float3(1.0, 0.0, 0.0);
+const float3 vector_up = float3(0.0, 1.0, 0.0);
+const float3 vector_forward = float3(0.0, 0.0, 1.0);
+const float2x2 mtx = float2x2(0.75, 042, -0.55, 0.91);
+
+// Parameters
+int config_size;
+
+/*
+ * Hash value generator by Inigo Quilez
+ * hhttps://www.shadertoy.com/view/4dffRH
+*/
+float3 hash3D(const int3 p, const uint seed)
+{
+    int3 n = int3(p.x * 127 + p.y * 311 + p.z * 74 + seed,
+                  p.x * 269 + p.y * 183 + p.z * 246 + seed,
+                  p.x * 113 + p.y * 271 + p.z * 124 + seed);
+
+    // 1D hash by Hugo Elias
+    n = (n << 13) ^ n;
+    n = n * (n * n * 15731 + 789221) + 1376312589;
+
+    return -1.0 + 2.0 * float3(n & 0x0fffffff) / 0x0fffffff;
+}
+
+/*
+ * Hash value generator by Inigo Quilez into 4D
+ * hhttps://www.shadertoy.com/view/4dffRH
+*/
+float4 hash4D(const int3 p, const uint seed)
+{
+    int4 p4 = int4(p.x, p.y, p.z, 0.5);
+    int4 n = int4(p4.x * 127 + p4.y * 311 + p4.z * 74 + p4.w * 467 + seed,
+                  p4.x * 269 + p4.y * 183 + p4.z * 246 + p4.w * 983 + seed,
+                  p4.x * 113 + p4.y * 271 + p4.z * 124 + p4.w * 367 + seed,
+                  p4.x * 419 + p4.y * 829 + p4.z * 613 + p4.w * 211 + seed);
+
+    // 1D hash by Hugo Elias
+    n = (n << 13) ^ n;
+    n = n * (n * n * 15731 + 789221) + 1376312589;
+
+    return -1.0 + 2.0 * float4(n & 0x0fffffff) / 0x0fffffff;
+}
+
+/*
+ * Hash function 2D by Inigo Quilez
+ * https://www.shadertoy.com/view/Msf3WH
+ */
+float2 hash2D(float2 p, const uint seed) 
+{
+    p = float2(dot(p, float2(127.1, 311.7)), dot(p, float2(269.5, 183.3)));
+    return -1.0 + 2.0 * frac(sin(p + seed) * 43758.5453123);
+}
+
+/*
+ * Hash function by Inigo Quilez
+ * https://www.shadertoy.com/view/ldB3zc
+ */
+float hash(const int2 p, const uint seed)
+{
+    return frac(sin(dot(p, float2(12.9898, 78.233) + seed)) * 43758.5453);
+}
+
+/*
+ * Hash function by Hugo Elias
+ * https://www.shadertoy.com/view/WsV3zz
+ */
+float hashHE(int n)
+{
+    n = (n << 13) ^ n;
+    n = n * (n * n * 15731 + 789221) + 1376312589;
+
+    return -1.0 + 2.0 * float(n & 0x0fffffff) / 0x0fffffff;
+}
+
+/*
+ * Simplex Noise by Inigo Quilez for a 2D space
+ * https://www.shadertoy.com/view/Msf3WH
+ */
+float simplex_noise(const float2 p, const uint seed)
+{
+    // Constants
+    const float k1 = 0.366025404; // (sqrt(3)-1)/2;
+    const float k2 = 0.211324865; // (3-sqrt(3))/6;
+
+    // Calculations
+    const float2 i = floor(p + (p.x + p.y) * k1);
+    const float2 a = p - i + (i.x + i.y) * k2;
+    const float m = step(a.y, a.x);
+    const float2 o = float2(m, 1.0 - m);
+    const float2 b = a - o + k2;
+    const float2 c = a - 1.0 + 2.0 * k2;
+    const float3 h = max(0.5 - float3(dot(a, a), dot(b,b), dot(c, c)), 0.0);
+    const float3 n = h * h * h * h * float3(dot(a, hash2D(i + 0.0, seed)), dot(b, hash2D(i + o, seed)), dot(c, hash2D(i +  1.0, seed)));
+    
+    return dot(n, float3(70,70,70));
+}
+
+/*
+ * Perlin Noise by Inigo Quilez for a 2D space
+ * https://iquilezles.org/articles/gradientnoise/
+*/
+float perlin_noise(const float2 p, const uint seed)
+{
+    // grid
+    const float2 i = floor(p);
+    const float2 f = frac(p);
+
+    const float2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+
+    const float2 ga = hash2D(i + float2(0.0, 0.0), seed);
+    const float2 gb = hash2D(i + float2(1.0, 0.0), seed);
+    const float2 gc = hash2D(i + float2(0.0, 1.0), seed);
+    const float2 gd = hash2D(i + float2(1.0, 1.0), seed);
+
+    const float va = dot(ga, f - float2(0.0, 0.0));
+    const float vb = dot(gb, f - float2(1.0, 0.0));
+    const float vc = dot(gc, f - float2(0.0, 1.0));
+    const float vd = dot(gd, f - float2(1.0, 1.0));
+
+    return va + u.x * (vb - va) + u.y * (vc - va) + u.x * u.y * (va - vb - vc + vd);
+}
+
+/*
+ * Cellular noise by Inigo Quilez for a 2D space
+ * https://iquilezles.org/articles/smoothvoronoi/
+ */
+float voro_noise(const float2 p, const uint seed)
+{
+    const int2 a = floor(p);
+    const float2 f = frac(p);
+
+    float res = 8.0;
+    
+    for (int j = -1; j <= 1; j++)
+    {
+        for (int i = -1; i <= 1; i++)
+        {
+            const int2 b = int2(i, j);
+            const float2 r = b - f + hash(a + b, seed);
+            const float d = dot(r, r);
+
+            res = min(res, d);
+        }
+    }
+    
+    return sqrt(res);
+}
+
+/*
+ * Smoothed Cellular noise by Inigo Quilez for a 2D space
+ * https://iquilezles.org/articles/smoothvoronoi/
+ */
+float voro_smoothed_noise(const float2 p, const uint seed)
+{
+    const int2 a = floor(p);
+    const float2 f = frac(p);
+
+    float res = 0.0;
+    
+    for (int j = -1; j <= 1; j++)
+    {
+        for (int i = -1; i <= 1; i++)
+        {
+            const int2 b = int2(i, j);
+            const float2 r = b - f + hash(a + b, seed);
+            const float d = dot(r, r);
+
+            res += 1.0 / pow(d, 8.0);
+        }
+    }
+    
+    return pow(abs(1.0 / res), 1.0 / 16.0);
+}
+
+
+float noise(const float2 p, const int noise_type, const uint seed)
+{
+    switch (noise_type)
+    {
+    case 0: // simplex noise
+        return (0.5 + 0.5) * simplex_noise(p, seed);
+    case 1: // perlin noise
+        return (0.5 + 0.5) * perlin_noise(p, seed);
+    case 2: // voro noise
+        return (0.5 + 0.5) * voro_noise(p, seed);
+    case 3: // voro smoothed noise
+        return (0.5 + 0.5) * voro_smoothed_noise(p, seed);
+        default:
+            return 0;
+    }
+}
+
+float fbm6(const float2 p, const int noise_type, const uint seed)
+{
+    float2 x = p;
+    float f = 0.0;
+    
+    f += 0.5 * noise(x, noise_type, seed);
+    x = mul(mtx, x) * 2.02;
+
+    f += 0.25 * noise(x, noise_type, seed);
+    x = mul(mtx, x) * 2.03;
+
+    f += 0.125 * noise(x, noise_type, seed);
+    x = mul(mtx, x) * 2.01;
+
+    f += 0.0625 * noise(x, noise_type, seed);
+    x = mul(mtx, x) * 2.04;
+
+    f += 0.03125 * noise(x, noise_type, seed);
+    x = mul(mtx, x) * 2.01;
+
+    f += 0.0015625 * noise(x, noise_type, seed);
+    
+    return f / 0.9375;
+}
+
+float2 fbm6_2(const float2 p, const float4 f = float4(0.0, 0.0, 0.0, 0.0), const int noise_type = 0, const uint seed = 1)
+{
+    return float2(fbm6(p + f.xy, noise_type, seed), fbm6(p + f.zw, noise_type, seed));
+}
+
+float2 warp_noise(const float2 p, in int noise_type)
+{
+    const float2 o = fbm6_2(p, float4(0.0, 0.0, 5.2, 1.3), noise_type);
+    const float2 n = fbm6_2(p + 4.0 * o, float4(1.7, 9.2, 8.3, 2.8), noise_type);
+    
+    return fbm6_2(p + 4.0 * n, noise_type);
+}
+
+[numthreads(32, 32, 1)]
+void NoiseGen(uint3 id : SV_DispatchThreadID)
+{
+    float noise_value = 0;
+
+    for (int i = 0; i < config_size; i++)
+    {
+        const int noise_type = NoiseConfigArray[i].NoiseType;
+        
+        float2 p = id.xy + NoiseConfigArray[i].Offset;
+        p *= NoiseConfigArray[i].ScaleMultiplier;
+        
+        if(NoiseConfigArray[i].Warp)
+        {
+            noise_value += ((0.5 + 0.5 * warp_noise(p, noise_type).x) * NoiseConfigArray[i].Weight);
+        }
+        else
+        {
+            noise_value += ((0.5 + 0.5 * noise(p, noise_type, NoiseConfigArray[i].Seed)) * NoiseConfigArray[i].Weight);
+        }
+        
+    }
+
+    noise_value /=  config_size;
+        
+    NoiseTexture[id.xy] = float4(noise_value, noise_value, noise_value, 1);
+}

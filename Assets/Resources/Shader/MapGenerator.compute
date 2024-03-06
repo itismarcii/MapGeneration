@@ -1,0 +1,77 @@
+#pragma kernel MapGenerator 0
+#pragma kernel MapGeneratorChunk 1
+#pragma kernel TriangleSetup 2
+
+RWTexture2D<float4> HeightTexture;
+RWStructuredBuffer<float3> VertexResult; 
+RWStructuredBuffer<int> TriangleResult; 
+
+uint width, height;
+float height_multiplier;
+float2 offset, scale_multiplier;
+
+float round_up(const float value)
+{
+    return round(value + 0.5);
+}
+
+
+[numthreads(32,32,1)]
+void MapGenerator (uint3 id : SV_DispatchThreadID)
+{
+    if(id.x >= width || id.y >= height) return;
+
+    float3 p = id.xzy;
+    p.y = (HeightTexture[id.xy + offset].x) * height_multiplier;
+    p.y -= 0.5;
+
+    const int v_index = id.x + id.y * width;
+    VertexResult[v_index] = p;
+    
+    if(id.x >= width - 1 || id.y >= height - 1) return;
+    
+    uint t_index = (id.x + id.y * (width - 1)) * 6;
+
+    TriangleResult[t_index++] = v_index;
+    TriangleResult[t_index++] = id.x + (id.y + 1) * width;
+    TriangleResult[t_index++] = (id.x + 1) + (id.y + 1) * width;
+    
+    TriangleResult[t_index++] = (id.x + 1) + (id.y + 1) * width;
+    TriangleResult[t_index++] = (id.x + 1) + id.y * width;
+    TriangleResult[t_index] = v_index;
+}
+
+[numthreads(32,32,1)]
+void MapGeneratorChunk(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= width || id.y >= height) return;
+
+    float3 p = id.xzy;
+    p.xz *= scale_multiplier;
+    const float2 offset_scaled = offset * scale_multiplier;
+
+    const float2 index_frac = frac(p.xz);
+    const int2 texture_index = index_frac > 0.5 ? floor(p.xz) : ceil(p.xz);
+    const float height = HeightTexture[texture_index + offset_scaled].x;
+    p.y = (height * height_multiplier);
+
+    const int v_index = id.x + id.y * width;
+    VertexResult[v_index] = p;
+}
+
+[numthreads(32,32,1)]
+void TriangleSetup(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= width - 1 || id.y >= height - 1) return;
+
+    const int v_index = id.x + id.y * width;
+    uint t_index = v_index * 6;
+    
+    TriangleResult[t_index++] = v_index;
+    TriangleResult[t_index++] = id.x + (id.y + 1) * width;
+    TriangleResult[t_index++] = (id.x + 1) + (id.y + 1) * width;
+
+    TriangleResult[t_index++] = (id.x + 1) + (id.y + 1) * width;
+    TriangleResult[t_index++] = (id.x + 1) + id.y * width;
+    TriangleResult[t_index] = v_index;
+}
